@@ -62,14 +62,30 @@ app.get('/', (req, res) => {
                     
                     if (response.ok) {
                         let audioFiles = '';
+                        let summary = '';
+                        
+                        if (data.summary) {
+                            summary = \`
+                                <br><strong>Summary:</strong>
+                                <br>• Total files: \${data.summary.totalFiles}
+                                <br>• Formats: \${data.summary.formats.join(', ')}
+                                <br>• Domains: \${data.summary.domains.join(', ')}
+                                <br>• Largest file: \${data.summary.largestFile ? data.summary.largestFile.sizeFormatted : 'N/A'}
+                            \`;
+                        }
+                        
                         data.audioFiles.forEach((file, index) => {
-                            audioFiles += \`<br><strong>Audio \${index + 1}:</strong> <a href="\${file}" target="_blank">Download</a>\`;
+                            audioFiles += \`
+                                <br><strong>Audio \${index + 1}:</strong> 
+                                <a href="\${file.url}" target="_blank">\${file.filename}</a>
+                                <br>• Size: \${file.sizeFormatted} | Type: \${file.extension} | Domain: \${file.domain}
+                            \`;
                         });
                         
                         resultDiv.innerHTML = \`<div class="result success">
                             ✅ Success!<br>
-                            <strong>Page Title:</strong> \${data.title}<br>
-                            <strong>Audio Files Found:</strong> \${data.audioFiles.length}
+                            <strong>Page Title:</strong> \${data.title}
+                            \${summary}
                             \${audioFiles}
                         </div>\`;
                     } else {
@@ -185,10 +201,23 @@ app.post('/api/extract', async (req, res) => {
     page.on('response', async (response) => {
       const responseUrl = response.url();
       const contentType = response.headers()['content-type'] || '';
+      const contentLength = response.headers()['content-length'];
       
       if (isAudioFile(responseUrl, contentType)) {
         console.log('🎵 Audio file detected:', responseUrl);
-        audioFiles.add(responseUrl);
+        
+        // Extraire des infos détaillées
+        const audioInfo = {
+          url: responseUrl,
+          filename: extractFilename(responseUrl),
+          extension: extractExtension(responseUrl),
+          contentType: contentType,
+          size: contentLength ? parseInt(contentLength) : null,
+          sizeFormatted: contentLength ? formatBytes(parseInt(contentLength)) : 'Unknown',
+          domain: new URL(responseUrl).hostname
+        };
+        
+        audioFiles.add(JSON.stringify(audioInfo));
       }
     });
 
@@ -281,7 +310,17 @@ app.post('/api/extract', async (req, res) => {
     
     domAudioSources.forEach(src => {
       if (isAudioFile(src, '')) {
-        audioFiles.add(src);
+        const audioInfo = {
+          url: src,
+          filename: extractFilename(src),
+          extension: extractExtension(src),
+          contentType: 'audio/unknown',
+          size: null,
+          sizeFormatted: 'Unknown',
+          domain: new URL(src, url).hostname,
+          source: 'DOM'
+        };
+        audioFiles.add(JSON.stringify(audioInfo));
       }
     });
     
@@ -289,9 +328,18 @@ app.post('/api/extract', async (req, res) => {
     
     await browser.close();
     
-    const audioArray = Array.from(audioFiles);
+    // Parser et trier les résultats
+    const audioArray = Array.from(audioFiles).map(jsonStr => JSON.parse(jsonStr));
     
-    if (audioArray.length === 0) {
+    // Supprimer les doublons par URL
+    const uniqueAudioFiles = audioArray.filter((file, index, self) => 
+      index === self.findIndex(f => f.url === file.url)
+    );
+    
+    // Trier par taille (plus grand en premier)
+    uniqueAudioFiles.sort((a, b) => (b.size || 0) - (a.size || 0));
+    
+    if (uniqueAudioFiles.length === 0) {
       return res.status(404).json({ 
         error: 'No audio files found on this page',
         suggestion: 'Make sure the page contains audio content that loads without authentication'
@@ -301,9 +349,15 @@ app.post('/api/extract', async (req, res) => {
     res.json({
       success: true,
       title: pageTitle,
-      audioFiles: audioArray,
+      audioFiles: uniqueAudioFiles,
       originalUrl: url,
-      count: audioArray.length
+      count: uniqueAudioFiles.length,
+      summary: {
+        totalFiles: uniqueAudioFiles.length,
+        largestFile: uniqueAudioFiles[0] || null,
+        formats: [...new Set(uniqueAudioFiles.map(f => f.extension))],
+        domains: [...new Set(uniqueAudioFiles.map(f => f.domain))]
+      }
     });
 
   } catch (error) {
@@ -328,6 +382,34 @@ function isValidUrl(string) {
   } catch (_) {
     return false;
   }
+}
+
+function extractFilename(url) {
+  try {
+    const pathname = new URL(url).pathname;
+    const filename = pathname.split('/').pop();
+    return filename || 'unknown';
+  } catch (e) {
+    return 'unknown';
+  }
+}
+
+function extractExtension(url) {
+  try {
+    const filename = extractFilename(url);
+    const match = filename.match(/\.([^.?]+)(\?|$)/);
+    return match ? match[1].toLowerCase() : 'unknown';
+  } catch (e) {
+    return 'unknown';
+  }
+}
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
 function isAudioFile(url, contentType) {
