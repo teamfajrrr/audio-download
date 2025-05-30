@@ -1,5 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
 const axios = require('axios');
 const path = require('path');
 
@@ -98,9 +98,10 @@ app.post('/api/extract', async (req, res) => {
   try {
     console.log('🚀 Starting browser...');
     
-    // Configuration Puppeteer pour Railway
+    // Configuration Puppeteer pour Railway avec Chromium système
     browser = await puppeteer.launch({
       headless: true,
+      executablePath: '/nix/store/*/bin/chromium', // Utilise le Chromium de Nixpacks
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -110,7 +111,8 @@ app.post('/api/extract', async (req, res) => {
         '--no-zygote',
         '--disable-gpu',
         '--disable-web-security',
-        '--disable-features=VizDisplayCompositor'
+        '--disable-features=VizDisplayCompositor',
+        '--single-process'
       ]
     });
 
