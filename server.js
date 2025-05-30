@@ -87,31 +87,43 @@ app.get('/', (req, res) => {
 
 // Fonction pour détecter Chromium
 function findChromiumExecutable() {
-  const { execSync } = require('child_process');
   const fs = require('fs');
   
-  // Essayer avec which
-  try {
-    const result = execSync('which chromium', { encoding: 'utf8' }).trim();
-    if (result && fs.existsSync(result)) {
-      return result;
-    }
-  } catch (e) {}
-  
-  // Chemins communs
+  // Chemins directs - Railway avec Dockerfile
   const paths = [
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
     '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable'
+    '/usr/bin/google-chrome-stable',
+    process.env.PUPPETEER_EXECUTABLE_PATH
   ];
   
+  console.log('🔍 Searching for Chromium executable...');
+  
   for (const path of paths) {
-    try {
-      if (fs.existsSync(path)) {
-        return path;
+    if (path) {
+      console.log(`Checking: ${path}`);
+      try {
+        if (fs.existsSync(path)) {
+          console.log(`✅ Found Chromium at: ${path}`);
+          return path;
+        }
+      } catch (e) {
+        console.log(`❌ Error checking ${path}:`, e.message);
       }
-    } catch (e) {}
+    }
+  }
+  
+  // Dernière tentative avec which
+  try {
+    const { execSync } = require('child_process');
+    const result = execSync('which chromium 2>/dev/null || which google-chrome 2>/dev/null', { encoding: 'utf8' }).trim();
+    if (result && fs.existsSync(result)) {
+      console.log(`✅ Found via which: ${result}`);
+      return result;
+    }
+  } catch (e) {
+    console.log('❌ which command failed:', e.message);
   }
   
   return null;
