@@ -1,5 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
+const { chromium } = require('playwright');
 const axios = require('axios');
 const path = require('path');
 
@@ -98,19 +98,13 @@ app.post('/api/extract', async (req, res) => {
   try {
     console.log('🚀 Starting browser...');
     
-    // Configuration Puppeteer standard
-    browser = await puppeteer.launch({
+    // Configuration Playwright
+    browser = await chromium.launch({
       headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-        '--disable-web-security',
-        '--disable-features=VizDisplayCompositor',
         '--single-process'
       ]
     });
@@ -118,16 +112,13 @@ app.post('/api/extract', async (req, res) => {
     const page = await browser.newPage();
     
     // Set user agent to avoid blocking
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+    await page.setExtraHTTPHeaders({
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    });
     
     // Intercepter les requêtes réseau pour capturer les fichiers audio
     const audioFiles = new Set();
     let pageTitle = 'Unknown Page';
-    
-    await page.setRequestInterception(true);
-    page.on('request', (request) => {
-      request.continue();
-    });
     
     page.on('response', async (response) => {
       const responseUrl = response.url();
@@ -141,7 +132,7 @@ app.post('/api/extract', async (req, res) => {
     });
 
     console.log('📄 Loading page...');
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 45000 });
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 });
     
     // Extraire le titre de la page
     try {
@@ -180,15 +171,12 @@ app.post('/api/extract', async (req, res) => {
     
     for (const selector of playSelectors) {
       try {
-        const elements = await page.$$(selector);
+        const elements = await page.$(selector);
         
         for (const element of elements) {
           try {
             // Check if element is visible and clickable
-            const isVisible = await page.evaluate(el => {
-              const style = window.getComputedStyle(el);
-              return style.display !== 'none' && style.visibility !== 'hidden' && el.offsetParent !== null;
-            }, element);
+            const isVisible = await element.isVisible();
             
             if (isVisible) {
               console.log(`✅ Clicking element with selector: ${selector}`);
