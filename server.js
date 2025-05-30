@@ -98,10 +98,9 @@ app.post('/api/extract', async (req, res) => {
   try {
     console.log('🚀 Starting browser...');
     
-    // Configuration Puppeteer pour Railway avec Chromium système
-    browser = await puppeteer.launch({
+    // Configuration Puppeteer pour Railway/Nixpacks
+    const browserConfig = {
       headless: true,
-      executablePath: '/nix/store/*/bin/chromium', // Utilise le Chromium de Nixpacks
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -112,9 +111,47 @@ app.post('/api/extract', async (req, res) => {
         '--disable-gpu',
         '--disable-web-security',
         '--disable-features=VizDisplayCompositor',
-        '--single-process'
+        '--single-process',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding'
       ]
-    });
+    };
+
+    // Essayer de trouver Chromium sur Railway
+    try {
+      const { execSync } = require('child_process');
+      const chromiumPath = execSync('which chromium || which google-chrome || which google-chrome-stable', { encoding: 'utf8' }).trim();
+      if (chromiumPath) {
+        console.log('✅ Found browser:', chromiumPath);
+        browserConfig.executablePath = chromiumPath;
+      }
+    } catch (e) {
+      console.log('⚠️ Browser detection failed, trying default paths...');
+    }
+
+    // Si pas trouvé, essayer les chemins communs
+    if (!browserConfig.executablePath) {
+      const commonPaths = [
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser', 
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable'
+      ];
+      
+      for (const path of commonPaths) {
+        try {
+          require('fs').accessSync(path);
+          browserConfig.executablePath = path;
+          console.log('✅ Using browser:', path);
+          break;
+        } catch (e) {
+          continue;
+        }
+      }
+    }
+
+    browser = await puppeteer.launch(browserConfig);
 
     const page = await browser.newPage();
     
