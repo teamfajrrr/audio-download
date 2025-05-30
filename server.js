@@ -1,17 +1,12 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
 const axios = require('axios');
 const path = require('path');
-
-// Configuration des variables d'environnement
-process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = 'true';
-process.env.PUPPETEER_EXECUTABLE_PATH = '/usr/bin/chromium-browser';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
-app.use(express.static('public'));
 
 // Page d'interface simple
 app.get('/', (req, res) => {
@@ -90,6 +85,38 @@ app.get('/', (req, res) => {
   `);
 });
 
+// Fonction pour détecter Chromium
+function findChromiumExecutable() {
+  const { execSync } = require('child_process');
+  const fs = require('fs');
+  
+  // Essayer avec which
+  try {
+    const result = execSync('which chromium', { encoding: 'utf8' }).trim();
+    if (result && fs.existsSync(result)) {
+      return result;
+    }
+  } catch (e) {}
+  
+  // Chemins communs
+  const paths = [
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable'
+  ];
+  
+  for (const path of paths) {
+    try {
+      if (fs.existsSync(path)) {
+        return path;
+      }
+    } catch (e) {}
+  }
+  
+  return null;
+}
+
 // Endpoint API pour n8n
 app.post('/api/extract', async (req, res) => {
   const { url } = req.body;
@@ -102,8 +129,18 @@ app.post('/api/extract', async (req, res) => {
   try {
     console.log('🚀 Starting browser...');
     
-    // Configuration Puppeteer pour utiliser Chromium système
-    const browserConfig = {
+    // Trouver l'exécutable Chromium
+    const chromiumPath = findChromiumExecutable();
+    
+    if (!chromiumPath) {
+      throw new Error('Chromium not found on system');
+    }
+    
+    console.log('✅ Using Chromium:', chromiumPath);
+    
+    // Configuration Puppeteer
+    browser = await puppeteer.launch({
+      executablePath: chromiumPath,
       headless: true,
       args: [
         '--no-sandbox',
@@ -115,47 +152,16 @@ app.post('/api/extract', async (req, res) => {
         '--disable-gpu',
         '--disable-web-security',
         '--disable-features=VizDisplayCompositor',
-        '--single-process',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding'
+        '--single-process'
       ]
-    };
-
-    // Essayer de trouver Chromium sur Railway/Nixpacks
-    const chromiumPaths = [
-      '/usr/bin/chromium',
-      '/usr/bin/chromium-browser',
-      '/usr/bin/google-chrome',
-      '/usr/bin/google-chrome-stable',
-      process.env.PUPPETEER_EXECUTABLE_PATH
-    ];
-
-    for (const chromiumPath of chromiumPaths) {
-      if (chromiumPath) {
-        try {
-          require('fs').accessSync(chromiumPath);
-          browserConfig.executablePath = chromiumPath;
-          console.log('✅ Using Chromium:', chromiumPath);
-          break;
-        } catch (e) {
-          continue;
-        }
-      }
-    }
-
-    if (!browserConfig.executablePath) {
-      console.log('⚠️ No system Chromium found, trying default...');
-    }
-
-    browser = await puppeteer.launch(browserConfig);
+    });
 
     const page = await browser.newPage();
     
-    // Set user agent to avoid blocking
+    // Set user agent
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
     
-    // Intercepter les requêtes réseau pour capturer les fichiers audio
+    // Intercepter les requêtes réseau
     const audioFiles = new Set();
     let pageTitle = 'Unknown Page';
     
@@ -168,7 +174,6 @@ app.post('/api/extract', async (req, res) => {
       const responseUrl = response.url();
       const contentType = response.headers()['content-type'] || '';
       
-      // Détecter les fichiers audio (formats multiples)
       if (isAudioFile(responseUrl, contentType)) {
         console.log('🎵 Audio file detected:', responseUrl);
         audioFiles.add(responseUrl);
@@ -178,7 +183,7 @@ app.post('/api/extract', async (req, res) => {
     console.log('📄 Loading page...');
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 45000 });
     
-    // Extraire le titre de la page
+    // Extraire le titre
     try {
       pageTitle = await page.title() || 'Unknown Page';
     } catch (e) {
@@ -187,77 +192,64 @@ app.post('/api/extract', async (req, res) => {
 
     console.log('🔍 Looking for audio players...');
     
-    // Rechercher et cliquer sur tous les boutons play potentiels
+    // Sélecteurs pour boutons play
     const playSelectors = [
       'button[aria-label*="play" i]',
       'button[aria-label*="lecture" i]',
-      'button[aria-label*="écouter" i]',
       'button[title*="play" i]',
-      'button[title*="lecture" i]',
       '.play-button',
       '.btn-play',
-      '[class*="play" i]:not(script):not(style)',
       'button[class*="play" i]',
       '[data-testid*="play" i]',
-      '[data-action*="play" i]',
-      'button:has([class*="play" i])',
-      'div[role="button"][aria-label*="play" i]',
-      // Audio/video elements
       'audio',
-      'video',
-      // Generic audio controls
-      '.audio-controls button',
-      '.player-controls button',
-      '.media-controls button'
+      'video'
     ];
     
     let playButtonsFound = 0;
     
+    // Corriger la boucle des sélecteurs
     for (const selector of playSelectors) {
       try {
-        const elements = await page.$(selector);
+        const elements = await page.$$(selector); // $$ pour tous les éléments
         
         for (const element of elements) {
           try {
-            // Check if element is visible and clickable
-            const isVisible = await element.isVisible();
+            const isVisible = await page.evaluate(el => {
+              const style = window.getComputedStyle(el);
+              return style.display !== 'none' && style.visibility !== 'hidden' && el.offsetParent !== null;
+            }, element);
             
             if (isVisible) {
               console.log(`✅ Clicking element with selector: ${selector}`);
               await element.click();
               playButtonsFound++;
-              
-              // Wait a bit for the audio to load
               await page.waitForTimeout(3000);
             }
           } catch (e) {
-            // Continue with next element
             continue;
           }
         }
       } catch (e) {
-        // Continue with next selector
         continue;
       }
     }
     
     console.log(`▶️ Found and clicked ${playButtonsFound} potential play buttons`);
     
-    // Wait for audio files to load
+    // Attendre le chargement audio
     console.log('⏳ Waiting for audio content to load...');
     await page.waitForTimeout(10000);
     
-    // Try to trigger any lazy-loaded content
+    // Scroll pour déclencher le contenu lazy-loaded
     await page.evaluate(() => {
       window.scrollTo(0, document.body.scrollHeight);
     });
     await page.waitForTimeout(3000);
     
-    // Final check for audio elements in the DOM
+    // Vérifier les éléments audio dans le DOM
     const domAudioSources = await page.evaluate(() => {
       const sources = [];
       
-      // Check audio elements
       document.querySelectorAll('audio').forEach(audio => {
         if (audio.src) sources.push(audio.src);
         audio.querySelectorAll('source').forEach(source => {
@@ -265,7 +257,6 @@ app.post('/api/extract', async (req, res) => {
         });
       });
       
-      // Check video elements
       document.querySelectorAll('video').forEach(video => {
         if (video.src) sources.push(video.src);
         video.querySelectorAll('source').forEach(source => {
@@ -276,7 +267,6 @@ app.post('/api/extract', async (req, res) => {
       return sources;
     });
     
-    // Add DOM sources to our collection
     domAudioSources.forEach(src => {
       if (isAudioFile(src, '')) {
         audioFiles.add(src);
@@ -332,17 +322,14 @@ function isAudioFile(url, contentType) {
   const audioExtensions = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.wma', '.opus'];
   const audioContentTypes = ['audio/', 'application/ogg'];
   
-  // Check file extension
   const hasAudioExtension = audioExtensions.some(ext => 
     url.toLowerCase().includes(ext)
   );
   
-  // Check content type
   const hasAudioContentType = audioContentTypes.some(type => 
     contentType.toLowerCase().includes(type)
   );
   
-  // Check for streaming patterns
   const streamingPatterns = [
     '/stream',
     '/audio',
@@ -359,7 +346,6 @@ function isAudioFile(url, contentType) {
   return hasAudioExtension || hasAudioContentType || hasStreamingPattern;
 }
 
-// Health check pour Railway
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
