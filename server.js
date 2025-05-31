@@ -2,6 +2,13 @@ const express = require('express');
 const puppeteer = require('puppeteer-core');
 const axios = require('axios');
 const path = require('path');
+const archiver = require('archiver');
+const fs = require('fs');
+const { promisify } = require('util');
+const mkdir = promisify(fs.mkdir);
+const writeFile = promisify(fs.writeFile);
+const unlink = promisify(fs.unlink);
+const rmdir = promisify(fs.rmdir);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -336,27 +343,40 @@ app.post('/api/extract', async (req, res) => {
       index === self.findIndex(f => f.url === file.url)
     );
     
-    // Trier par taille (plus grand en premier)
-    uniqueAudioFiles.sort((a, b) => (b.size || 0) - (a.size || 0));
+    // Filtrer encore plus strictement par extension
+    const validAudioFiles = uniqueAudioFiles.filter(file => {
+      const validExtensions = ['mp3', 'm4a', 'aac', 'wav', 'ogg', 'flac', 'opus'];
+      return validExtensions.includes(file.extension);
+    });
     
-    if (uniqueAudioFiles.length === 0) {
+    // Trier par taille (plus grand en premier)
+    validAudioFiles.sort((a, b) => (b.size || 0) - (a.size || 0));
+    
+    console.log(`🔍 Valid audio files after filtering: ${validAudioFiles.length}`);
+    
+    if (validAudioFiles.length === 0) {
       return res.status(404).json({ 
-        error: 'No audio files found on this page',
-        suggestion: 'Make sure the page contains audio content that loads without authentication'
+        error: 'No valid audio files found on this page',
+        suggestion: 'Make sure the page contains MP3, M4A, AAC, or WAV files',
+        debug: {
+          totalDetected: audioArray.length,
+          afterDuplicateRemoval: uniqueAudioFiles.length,
+          afterValidation: validAudioFiles.length
+        }
       });
     }
     
     res.json({
       success: true,
       title: pageTitle,
-      audioFiles: uniqueAudioFiles,
+      audioFiles: validAudioFiles,
       originalUrl: url,
-      count: uniqueAudioFiles.length,
+      count: validAudioFiles.length,
       summary: {
-        totalFiles: uniqueAudioFiles.length,
-        largestFile: uniqueAudioFiles[0] || null,
-        formats: [...new Set(uniqueAudioFiles.map(f => f.extension))],
-        domains: [...new Set(uniqueAudioFiles.map(f => f.domain))]
+        totalFiles: validAudioFiles.length,
+        largestFile: validAudioFiles[0] || null,
+        formats: [...new Set(validAudioFiles.map(f => f.extension))],
+        domains: [...new Set(validAudioFiles.map(f => f.domain))]
       }
     });
 
@@ -413,67 +433,371 @@ function formatBytes(bytes) {
 }
 
 function isAudioFile(url, contentType) {
-  // Extensions audio strictes
-  const audioExtensions = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.wma', '.opus', '.mp4a', '.3gp'];
+  // Extensions audio strictes uniquement
+  const audioExtensions = ['.mp3', '.aac', '.m4a', '.wav', '.ogg', '.flac', '.opus'];
   
   // Types MIME audio stricts
   const audioContentTypes = [
-    'audio/',
-    'application/ogg',
-    'application/octet-stream' // Parfois utilisé pour l'audio
+    'audio/mpeg',      // MP3
+    'audio/mp4',       // M4A
+    'audio/aac',       // AAC
+    'audio/wav',       // WAV
+    'audio/wave',      // WAV alternatif
+    'audio/x-wav',     // WAV alternatif
+    'audio/ogg',       // OGG
+    'audio/flac',      // FLAC
+    'audio/opus'       // OPUS
   ];
   
-  // Extensions à exclure explicitement
-  const excludedExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.css', '.js', '.json', '.html', '.xml', '.txt'];
-  
   const urlLower = url.toLowerCase();
+  const contentTypeLower = contentType.toLowerCase();
   
-  // Exclure explicitement les fichiers non-audio
-  const hasExcludedExtension = excludedExtensions.some(ext => 
+  // 1. Exclure explicitement tout ce qui n'est PAS audio
+  const nonAudioExtensions = [
+    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico',  // Images
+    '.css', '.js', '.json', '.html', '.xml', '.txt', '.pdf',           // Documents
+    '.mp4', '.avi', '.mov', '.wmv', '.webm',                          // Vidéos
+    '.woff', '.woff2', '.ttf', '.eot',                                // Fonts
+    '.zip', '.rar', '.tar', '.gz'                                     // Archives
+  ];
+  
+  const hasNonAudioExtension = nonAudioExtensions.some(ext => 
     urlLower.includes(ext)
   );
   
-  if (hasExcludedExtension) {
+  if (hasNonAudioExtension) {
     return false;
   }
   
-  // Vérifier les extensions audio
-  const hasAudioExtension = audioExtensions.some(ext => 
-    urlLower.includes(ext)
-  );
+  // 2. Exclure les types MIME non-audio
+  const nonAudioMimeTypes = [
+    'image/', 'video/', 'text/', 'application/json', 'application/javascript',
+    'text/css', 'text/html', 'application/pdf', 'font/', 'application/font'
+  ];
   
-  // Vérifier le type MIME
-  const contentTypeLower = contentType.toLowerCase();
-  const hasAudioContentType = audioContentTypes.some(type => 
+  const hasNonAudioMimeType = nonAudioMimeTypes.some(type => 
     contentTypeLower.includes(type)
   );
   
-  // Patterns spécifiques pour l'audio streaming
-  const audioStreamingPatterns = [
-    '/audio/',
-    '/podcast/',
-    '/stream/',
-    'audio-stream',
-    '.m3u8',
-    '.aac',
-    '.mp3'
-  ];
-  
-  const hasAudioStreamingPattern = audioStreamingPatterns.some(pattern => 
-    urlLower.includes(pattern)
-  );
-  
-  // Exclure si c'est clairement une image par le type MIME
-  if (contentTypeLower.includes('image/') || 
-      contentTypeLower.includes('text/') || 
-      contentTypeLower.includes('application/json') ||
-      contentTypeLower.includes('text/css') ||
-      contentTypeLower.includes('application/javascript')) {
+  if (hasNonAudioMimeType) {
     return false;
   }
   
-  // Retourner true seulement si c'est vraiment audio
-  return hasAudioExtension || (hasAudioContentType && !contentTypeLower.includes('image/')) || hasAudioStreamingPattern;
+  // 3. Vérifier les extensions audio strictes
+  const hasValidAudioExtension = audioExtensions.some(ext => {
+    // Vérifier que l'extension est à la fin du nom de fichier (avant les paramètres)
+    const urlPath = urlLower.split('?')[0]; // Enlever les paramètres
+    return urlPath.endsWith(ext);
+  });
+  
+  // 4. Vérifier le type MIME audio
+  const hasValidAudioMimeType = audioContentTypes.some(type => 
+    contentTypeLower.includes(type)
+  );
+  
+  // 5. Patterns spécifiques pour les vrais streams audio (très restrictif)
+  const validAudioPatterns = [
+    /\/[^\/]*\.mp3(\?|$)/i,
+    /\/[^\/]*\.m4a(\?|$)/i,
+    /\/[^\/]*\.aac(\?|$)/i,
+    /\/[^\/]*\.wav(\?|$)/i,
+    /\/audio\/[^\/]*\.(mp3|m4a|aac|wav)/i,
+    /\/podcast\/[^\/]*\.(mp3|m4a|aac|wav)/i
+  ];
+  
+  const hasValidAudioPattern = validAudioPatterns.some(pattern => 
+    pattern.test(url)
+  );
+  
+  // Retourner true seulement si c'est vraiment un fichier audio
+  return hasValidAudioExtension || hasValidAudioMimeType || hasValidAudioPattern;
+}
+
+// Endpoint de téléchargement
+app.post('/api/download', async (req, res) => {
+  const { url, options = {} } = req.body;
+  
+  // Options de filtrage
+  const {
+    downloadAll = false,      // true = tous, false = seulement le plus gros
+    minSize = 1048576,        // Taille minimale (1MB par défaut)
+    maxFiles = 10,            // Limite de fichiers
+    preferredFormats = ['mp3', 'm4a', 'wav'], // Formats préférés
+    excludeSmall = true       // Exclure les petits fichiers (jingles)
+  } = options;
+  
+  if (!url || !isValidUrl(url)) {
+    return res.status(400).json({ error: 'Valid URL required' });
+  }
+
+  let tempDir;
+  try {
+    // 1. Extraire les URLs audio
+    console.log('🔍 Extracting audio URLs...');
+    const extractResponse = await extractAudioFiles(url);
+    
+    if (!extractResponse.success) {
+      return res.status(500).json(extractResponse);
+    }
+
+    let audioFiles = extractResponse.audioFiles;
+    console.log(`📁 Found ${audioFiles.length} audio files`);
+
+    // 2. Filtrer selon les options
+    if (excludeSmall) {
+      audioFiles = audioFiles.filter(file => !file.size || file.size > minSize);
+      console.log(`🔽 After size filter: ${audioFiles.length} files`);
+    }
+
+    if (preferredFormats.length > 0) {
+      const preferredFiles = audioFiles.filter(file => 
+        preferredFormats.includes(file.extension)
+      );
+      if (preferredFiles.length > 0) {
+        audioFiles = preferredFiles;
+        console.log(`🎵 After format filter: ${audioFiles.length} files`);
+      }
+    }
+
+    // 3. Sélectionner les fichiers à télécharger
+    let filesToDownload;
+    if (downloadAll) {
+      filesToDownload = audioFiles.slice(0, maxFiles);
+    } else {
+      // Prendre seulement le plus gros fichier
+      filesToDownload = audioFiles.length > 0 ? [audioFiles[0]] : [];
+    }
+
+    if (filesToDownload.length === 0) {
+      return res.status(404).json({ 
+        error: 'No suitable audio files found',
+        suggestion: 'Try adjusting filter options'
+      });
+    }
+
+    console.log(`⬇️ Downloading ${filesToDownload.length} files...`);
+
+    // 4. Créer un dossier temporaire
+    tempDir = path.join(__dirname, 'temp', Date.now().toString());
+    await mkdir(tempDir, { recursive: true });
+
+    // 5. Télécharger les fichiers
+    const downloadedFiles = [];
+    for (let i = 0; i < filesToDownload.length; i++) {
+      const audioFile = filesToDownload[i];
+      try {
+        console.log(`📥 Downloading ${i + 1}/${filesToDownload.length}: ${audioFile.filename}`);
+        
+        const response = await axios({
+          method: 'GET',
+          url: audioFile.url,
+          responseType: 'arraybuffer',
+          timeout: 60000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          }
+        });
+
+        const filename = `${i + 1}_${audioFile.filename}`;
+        const filepath = path.join(tempDir, filename);
+        await writeFile(filepath, response.data);
+        
+        downloadedFiles.push({
+          filename,
+          filepath,
+          originalUrl: audioFile.url,
+          size: response.data.length
+        });
+        
+        console.log(`✅ Downloaded: ${filename} (${formatBytes(response.data.length)})`);
+      } catch (error) {
+        console.error(`❌ Failed to download ${audioFile.filename}:`, error.message);
+      }
+    }
+
+    if (downloadedFiles.length === 0) {
+      return res.status(500).json({ error: 'Failed to download any files' });
+    }
+
+    // 6. Si un seul fichier, le retourner directement
+    if (downloadedFiles.length === 1) {
+      const file = downloadedFiles[0];
+      res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
+      res.setHeader('Content-Type', 'application/octet-stream');
+      
+      const fileStream = fs.createReadStream(file.filepath);
+      fileStream.pipe(res);
+      
+      fileStream.on('end', async () => {
+        // Nettoyer les fichiers temporaires
+        try {
+          await unlink(file.filepath);
+          await rmdir(tempDir);
+        } catch (e) {}
+      });
+      
+      return;
+    }
+
+    // 7. Si plusieurs fichiers, créer un ZIP
+    const zipFilename = `audio_${Date.now()}.zip`;
+    res.setHeader('Content-Disposition', `attachment; filename="${zipFilename}"`);
+    res.setHeader('Content-Type', 'application/zip');
+
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    
+    archive.on('error', (err) => {
+      console.error('Archive error:', err);
+      res.status(500).json({ error: 'Failed to create archive' });
+    });
+
+    archive.on('end', async () => {
+      console.log('✅ Archive created successfully');
+      // Nettoyer les fichiers temporaires
+      try {
+        for (const file of downloadedFiles) {
+          await unlink(file.filepath);
+        }
+        await rmdir(tempDir);
+      } catch (e) {}
+    });
+
+    archive.pipe(res);
+
+    // Ajouter chaque fichier au ZIP
+    for (const file of downloadedFiles) {
+      archive.file(file.filepath, { name: file.filename });
+    }
+
+    await archive.finalize();
+
+    console.log(`🎉 Successfully packaged ${downloadedFiles.length} files in ZIP`);
+
+  } catch (error) {
+    console.error('❌ Download error:', error.message);
+    
+    // Nettoyer en cas d'erreur
+    if (tempDir) {
+      try {
+        const files = fs.readdirSync(tempDir);
+        for (const file of files) {
+          await unlink(path.join(tempDir, file));
+        }
+        await rmdir(tempDir);
+      } catch (e) {}
+    }
+    
+    res.status(500).json({ 
+      error: error.message,
+      details: 'Failed to download audio files'
+    });
+  }
+});
+
+// Fonction helper pour extraire les fichiers audio
+async function extractAudioFiles(url) {
+  // Réutiliser la logique de /api/extract
+  let browser;
+  try {
+    const chromiumPath = findChromiumExecutable();
+    if (!chromiumPath) {
+      throw new Error('Chromium not found on system');
+    }
+    
+    browser = await puppeteer.launch({
+      executablePath: chromiumPath,
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--single-process'
+      ]
+    });
+
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+    
+    const audioFiles = new Set();
+    let pageTitle = 'Unknown Page';
+    
+    await page.setRequestInterception(true);
+    page.on('request', (request) => request.continue());
+    
+    page.on('response', async (response) => {
+      const responseUrl = response.url();
+      const contentType = response.headers()['content-type'] || '';
+      const contentLength = response.headers()['content-length'];
+      
+      if (isAudioFile(responseUrl, contentType)) {
+        const audioInfo = {
+          url: responseUrl,
+          filename: extractFilename(responseUrl),
+          extension: extractExtension(responseUrl),
+          contentType: contentType,
+          size: contentLength ? parseInt(contentLength) : null,
+          sizeFormatted: contentLength ? formatBytes(parseInt(contentLength)) : 'Unknown',
+          domain: new URL(responseUrl).hostname
+        };
+        audioFiles.add(JSON.stringify(audioInfo));
+      }
+    });
+
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 45000 });
+    
+    try {
+      pageTitle = await page.title() || 'Unknown Page';
+    } catch (e) {}
+
+    // Simuler les clics sur les boutons play
+    const playSelectors = [
+      'button[aria-label*="play" i]',
+      'button[title*="play" i]',
+      '.play-button',
+      'button[class*="play" i]'
+    ];
+    
+    for (const selector of playSelectors) {
+      try {
+        const elements = await page.$(selector);
+        for (const element of elements) {
+          try {
+            const isVisible = await page.evaluate(el => {
+              const style = window.getComputedStyle(el);
+              return style.display !== 'none' && style.visibility !== 'hidden' && el.offsetParent !== null;
+            }, element);
+            
+            if (isVisible) {
+              await element.click();
+              await page.waitForTimeout(3000);
+            }
+          } catch (e) {}
+        }
+      } catch (e) {}
+    }
+    
+    await page.waitForTimeout(10000);
+    await browser.close();
+    
+    const audioArray = Array.from(audioFiles).map(jsonStr => JSON.parse(jsonStr));
+    const uniqueAudioFiles = audioArray.filter((file, index, self) => 
+      index === self.findIndex(f => f.url === file.url)
+    );
+    uniqueAudioFiles.sort((a, b) => (b.size || 0) - (a.size || 0));
+    
+    return {
+      success: true,
+      title: pageTitle,
+      audioFiles: uniqueAudioFiles
+    };
+    
+  } catch (error) {
+    if (browser) await browser.close();
+    return {
+      success: false,
+      error: error.message
+    };
+  }
 }
 
 app.get('/health', (req, res) => {
@@ -483,5 +807,6 @@ app.get('/health', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server started on port ${PORT}`);
   console.log(`📱 Interface: http://localhost:${PORT}`);
-  console.log(`🔗 API: http://localhost:${PORT}/api/extract`);
+  console.log(`🔗 API Extract: http://localhost:${PORT}/api/extract`);
+  console.log(`⬇️ API Download: http://localhost:${PORT}/api/download`);
 });
