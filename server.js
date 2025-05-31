@@ -2,13 +2,6 @@ const express = require('express');
 const puppeteer = require('puppeteer-core');
 const axios = require('axios');
 const path = require('path');
-const archiver = require('archiver');
-const fs = require('fs');
-const { promisify } = require('util');
-const mkdir = promisify(fs.mkdir);
-const writeFile = promisify(fs.writeFile);
-const unlink = promisify(fs.unlink);
-const rmdir = promisify(fs.rmdir);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
