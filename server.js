@@ -354,7 +354,12 @@ app.post('/api/extract', async (req, res) => {
         debug: {
           totalDetected: audioArray.length,
           afterDuplicateRemoval: uniqueAudioFiles.length,
-          afterValidation: validAudioFiles.length
+          afterValidation: validAudioFiles.length,
+          detectedFiles: audioArray.map(f => ({
+            url: f.url.substring(0, 100) + '...',
+            extension: f.extension,
+            contentType: f.contentType
+          }))
         }
       });
     }
@@ -439,7 +444,8 @@ function isAudioFile(url, contentType) {
     'audio/x-wav',     // WAV alternatif
     'audio/ogg',       // OGG
     'audio/flac',      // FLAC
-    'audio/opus'       // OPUS
+    'audio/opus',      // OPUS
+    'audio/'           // Générique audio
   ];
   
   const urlLower = url.toLowerCase();
@@ -462,10 +468,10 @@ function isAudioFile(url, contentType) {
     return false;
   }
   
-  // 2. Exclure les types MIME non-audio
+  // 2. Exclure les types MIME non-audio (mais pas trop strict)
   const nonAudioMimeTypes = [
-    'image/', 'video/', 'text/', 'application/json', 'application/javascript',
-    'text/css', 'text/html', 'application/pdf', 'font/', 'application/font'
+    'image/', 'video/', 'text/css', 'text/html', 'application/pdf', 
+    'font/', 'application/font', 'application/javascript'
   ];
   
   const hasNonAudioMimeType = nonAudioMimeTypes.some(type => 
@@ -476,11 +482,9 @@ function isAudioFile(url, contentType) {
     return false;
   }
   
-  // 3. Vérifier les extensions audio strictes
+  // 3. Vérifier les extensions audio (plus permissif)
   const hasValidAudioExtension = audioExtensions.some(ext => {
-    // Vérifier que l'extension est à la fin du nom de fichier (avant les paramètres)
-    const urlPath = urlLower.split('?')[0]; // Enlever les paramètres
-    return urlPath.endsWith(ext);
+    return urlLower.includes(ext);
   });
   
   // 4. Vérifier le type MIME audio
@@ -488,22 +492,31 @@ function isAudioFile(url, contentType) {
     contentTypeLower.includes(type)
   );
   
-  // 5. Patterns spécifiques pour les vrais streams audio (très restrictif)
-  const validAudioPatterns = [
-    /\/[^\/]*\.mp3(\?|$)/i,
-    /\/[^\/]*\.m4a(\?|$)/i,
-    /\/[^\/]*\.aac(\?|$)/i,
-    /\/[^\/]*\.wav(\?|$)/i,
-    /\/audio\/[^\/]*\.(mp3|m4a|aac|wav)/i,
-    /\/podcast\/[^\/]*\.(mp3|m4a|aac|wav)/i
+  // 5. Patterns pour streams audio (plus permissifs)
+  const audioStreamPatterns = [
+    '/audio/',
+    '/podcast/',
+    '/stream/',
+    'mp3',
+    'm4a',
+    'aac',
+    'wav'
   ];
   
-  const hasValidAudioPattern = validAudioPatterns.some(pattern => 
-    pattern.test(url)
+  const hasAudioStreamPattern = audioStreamPatterns.some(pattern => 
+    urlLower.includes(pattern)
   );
   
-  // Retourner true seulement si c'est vraiment un fichier audio
-  return hasValidAudioExtension || hasValidAudioMimeType || hasValidAudioPattern;
+  // Debug: loguer les détails
+  if (hasValidAudioExtension || hasValidAudioMimeType || hasAudioStreamPattern) {
+    console.log(`🔍 Audio detection for: ${url.substring(0, 100)}...`);
+    console.log(`   Extension match: ${hasValidAudioExtension}`);
+    console.log(`   MIME match: ${hasValidAudioMimeType} (${contentType})`);
+    console.log(`   Pattern match: ${hasAudioStreamPattern}`);
+  }
+  
+  // Retourner true si au moins un critère est rempli
+  return hasValidAudioExtension || hasValidAudioMimeType || hasAudioStreamPattern;
 }
 
 // Endpoint de téléchargement
