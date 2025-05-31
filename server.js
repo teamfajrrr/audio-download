@@ -413,31 +413,67 @@ function formatBytes(bytes) {
 }
 
 function isAudioFile(url, contentType) {
-  const audioExtensions = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.wma', '.opus'];
-  const audioContentTypes = ['audio/', 'application/ogg'];
+  // Extensions audio strictes
+  const audioExtensions = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.wma', '.opus', '.mp4a', '.3gp'];
   
-  const hasAudioExtension = audioExtensions.some(ext => 
-    url.toLowerCase().includes(ext)
-  );
-  
-  const hasAudioContentType = audioContentTypes.some(type => 
-    contentType.toLowerCase().includes(type)
-  );
-  
-  const streamingPatterns = [
-    '/stream',
-    '/audio',
-    '/podcast',
-    '/mp3',
-    '.m3u8',
-    'audio-stream'
+  // Types MIME audio stricts
+  const audioContentTypes = [
+    'audio/',
+    'application/ogg',
+    'application/octet-stream' // Parfois utilisé pour l'audio
   ];
   
-  const hasStreamingPattern = streamingPatterns.some(pattern => 
-    url.toLowerCase().includes(pattern)
+  // Extensions à exclure explicitement
+  const excludedExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.css', '.js', '.json', '.html', '.xml', '.txt'];
+  
+  const urlLower = url.toLowerCase();
+  
+  // Exclure explicitement les fichiers non-audio
+  const hasExcludedExtension = excludedExtensions.some(ext => 
+    urlLower.includes(ext)
   );
   
-  return hasAudioExtension || hasAudioContentType || hasStreamingPattern;
+  if (hasExcludedExtension) {
+    return false;
+  }
+  
+  // Vérifier les extensions audio
+  const hasAudioExtension = audioExtensions.some(ext => 
+    urlLower.includes(ext)
+  );
+  
+  // Vérifier le type MIME
+  const contentTypeLower = contentType.toLowerCase();
+  const hasAudioContentType = audioContentTypes.some(type => 
+    contentTypeLower.includes(type)
+  );
+  
+  // Patterns spécifiques pour l'audio streaming
+  const audioStreamingPatterns = [
+    '/audio/',
+    '/podcast/',
+    '/stream/',
+    'audio-stream',
+    '.m3u8',
+    '.aac',
+    '.mp3'
+  ];
+  
+  const hasAudioStreamingPattern = audioStreamingPatterns.some(pattern => 
+    urlLower.includes(pattern)
+  );
+  
+  // Exclure si c'est clairement une image par le type MIME
+  if (contentTypeLower.includes('image/') || 
+      contentTypeLower.includes('text/') || 
+      contentTypeLower.includes('application/json') ||
+      contentTypeLower.includes('text/css') ||
+      contentTypeLower.includes('application/javascript')) {
+    return false;
+  }
+  
+  // Retourner true seulement si c'est vraiment audio
+  return hasAudioExtension || (hasAudioContentType && !contentTypeLower.includes('image/')) || hasAudioStreamingPattern;
 }
 
 app.get('/health', (req, res) => {
